@@ -1,0 +1,100 @@
+//@version=6
+// Copyright (c) 2025 Gurjit Singh
+// This source code is licensed under the Creative Commons Attribution-ShareAlike: https://creativecommons.org/licenses/by-sa/4.0/.
+
+indicator("Dual Adaptive Movings", overlay=true, timeframe="", timeframe_gaps=true)
+
+src = input(close, title="Source", inline = "src")
+maType = input.string("ACMO", "Moving", inline = "src",
+                      options=["ACMO", "ARSI", "FRMA", "ASTA"])
+length = input.int(9, title="MA Length: Primary", inline = "len")
+fLen = input.int(11, title="Following", inline = "len")
+
+useSame = input.bool(true, title="Using same length as primary MA")
+famaLen = useSame ? length : fLen
+useWilders = input.bool(false, title="Use Wilder's Smoothing (vs EMA)")
+showFill = input.bool(true, title="Show Line Fills")
+
+bullishColor = input.color(color.rgb(176, 190, 197), title="Bullish", inline = "Clr")
+bearishColor = input.color(color.rgb(141, 110, 99), title="Bearish", inline = "Clr")
+fillTrans = input.int(94, title="Fill trans:", inline = "Clr")
+
+normalize(src, len) =>
+    minVal = ta.lowest(src, len)
+    maxVal = ta.highest(src, len)
+    fullRange = maxVal - minVal
+    fullRange != 0 ? ((src - minVal) / fullRange) : 0.5 // 0 
+    
+adaptiveMA(src, len, alpha) =>
+    initSMA = ta.sma(src, len)
+    ma = initSMA
+    ma := alpha * src + (1 - alpha) * nz(ma[1], initSMA)
+
+clampAlpha(alpha) =>
+    math.max(0.01, math.min(alpha, 1))
+
+getAlphaBase(len) =>
+    useWilders ? (1 / len) : (2 / (len + 1))
+
+getAlphaNorm(len, adaptFactor) =>
+    base = getAlphaBase(len)
+    clampAlpha(base * normalize(adaptFactor, len))
+
+getAlpha(len, adaptFactor) =>
+    base = getAlphaBase(len)
+    clampAlpha(base * adaptFactor)
+
+getHalfAlpha(alpha, half) => half ? alpha / 2 : alpha
+
+// Adaptive CMO
+acmo(src, len, hAlpha) =>
+    cmo = math.abs(ta.cmo(src, len) / 100)
+    alpha = getHalfAlpha(getAlpha(len, cmo), hAlpha)
+    adaptiveMA(src, len, alpha)
+
+// Adaptive RSI
+arsi(src, len, hAlpha) =>
+    rsi = math.abs(ta.rsi(src, len) - 50) / 50
+    alpha = getHalfAlpha(getAlpha(len, rsi), hAlpha)
+    adaptiveMA(src, len, alpha)
+
+// Fractal Roughness Moving Average: FRAMA via Range Ratio (Simplified Dimension Estimation)
+frma(src, len, hAlpha) =>
+    half = math.floor(len / 2)
+    rangeLong = ta.highest(src, len) - ta.lowest(src, len)
+    rangeShort = (ta.highest(src, half) - ta.lowest(src, half)) * 2
+    roughness = rangeLong != 0 ? rangeShort / rangeLong : 1
+    alpha = getHalfAlpha(getAlphaNorm(len, roughness), hAlpha)
+    adaptiveMA(src, len, alpha)
+
+// Adaptive Stochastic Acceleration (%K Acceleration-based)
+asta(src, len, hAlpha) =>
+    k = normalize(src, len)  // raw stochastic %K normalized
+    // k = ta.stoch(src, ta.highest(src, len), ta.lowest(src, len), len) / 100
+    accel = math.abs(k - nz(k[1])) // acceleration = Δ%K
+    alpha = getHalfAlpha(getAlphaNorm(len, accel), hAlpha)
+    adaptiveMA(src, len, alpha)
+
+maCalc(src, len, maType, fama) =>
+    switch maType
+        "ACMO" => acmo(src, len, fama),
+        "ARSI" => arsi(src, len, fama),
+        "FRMA" => frma(src, len, fama),
+        "ASTA" => asta(src, len, fama),
+
+ma = maCalc(src, length, maType, false)
+fama = maCalc(ma, famaLen, maType, true)
+
+bull = ma > fama 
+trendColor = bull ? bullishColor : bearishColor
+
+plotMa = plot(ma, color=trendColor, linewidth=2, title="MA")
+plotSm = plot(fama, color=trendColor, title="Smoothing")
+fill(plotMa, plotSm, color=color.new(trendColor, showFill ? fillTrans : 100))
+
+co = ta.crossover(ma, fama)
+cu = ta.crossunder(ma, fama)
+
+alertcondition(co, "Bullish 🐂")
+alertcondition(cu, "Bearish 🐻")
+alertcondition(co or cu, "🐂 Bulls ⚔️ Bears 🐻")
